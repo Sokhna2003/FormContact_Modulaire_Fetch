@@ -1,5 +1,6 @@
 import { elements } from "./DOM/elements.js";
-import { createContact, updateContact, deleteContact, deleteContacts, getContactById } from "./services/contactService.js";
+import { addContact, updateContact, deleteContact, deleteContacts } from "./services/contactService.js";
+import { getContacts } from "./stores/contactStore.js";
 import { state, renderList, updateSelectionUI } from "./UI/contactRenderer.js";
 import { showToast } from "./UI/messageRenderer.js";
 import { openModal, closeModal } from "./UI/modalRenderer.js";
@@ -9,8 +10,14 @@ import { validateForm, showErrors, clearErrors } from "./Utile/validateForm.js";
 // ── État local : pour modal suppression simple 
 let pendingDeleteId = null;
 
+// fonction pour recharger le serveur et rafraîchir l'interface
+async function rafraichirInterface() {
+    const contactsFrais = await getContacts();
+    renderList(contactsFrais);
+}
+
 // ── FORMULAIRE : Soumission ( ajout /modification ) 
-elements.form.addEventListener("submit", (e) => {
+elements.form.addEventListener("submit", async (e) => {
     e.preventDefault()
     const data = {
         firstName: elements.firstNameEl.value,
@@ -29,42 +36,50 @@ elements.form.addEventListener("submit", (e) => {
     clearErrors()
     const id = elements.editIdInput.value
 
-    if (id) {
+    try {
+       if (id) {
         // update
-        const updated = updateContact(Number(id), data)
+        const updated = await updateContact(id, data)
         resetForm()
-        renderList()
+        await rafraichirInterface()
         showToast("success", "Mis à jour", `${updated.firstName} ${updated.lastName} a été modifié `)
     } else {
         // Create
-        const created = createContact(data)
+        const created = await addContact(data.firstName, data.lastName, data.email, data.phone, data.role)
         resetForm()
         state.currentPage = 1
-        renderList()
+        await rafraichirInterface()
         showToast("success", "Ajouté", `${created.firstName} a été ajouté avec succès `)
+    } 
+    } catch (error) {
+        console.error(error)
+        showToast("warn", "Erreur", "Une erreur est survenue avec le serveur.")
     }
+    
 })
 
 // ── RECHERCHE ────────────────────────────────────────────────────────────────
-elements.searchInput.addEventListener("input", () => {
+elements.searchInput.addEventListener("input", async () => {
     state.searchQuery = elements.searchInput.value;
     state.currentPage = 1;
-    renderList();
+    renderList(await getContacts());
 });
 
 // ── ACTIONS SUR LA LISTE (Délégation) ────────────────────────────────────────
-elements.contactList.addEventListener("click", (e) => {
-    const id = Number(e.target.closest("li")?.dataset.id);
+elements.contactList.addEventListener("click", async (e) => {
+    const id = e.target.closest("li")?.dataset.id;
     if (!id) return;
+
+    const contacts = await getContacts();
+    const contact = contacts.find((c) => c.id === id);
+    if (!contact) return;
 
     // Bouton Modifier
     if (e.target.closest(".btn-edit")) {
-        const contact = getContactById(id);
-        if (contact) setEditMode(contact);
+        setEditMode(contact)
     }
     // Bouton Supprimer (ouvre le modal)
     if (e.target.closest(".btn-delete")) {
-        const contact = getContactById(id);
         pendingDeleteId = id;
         elements.modalDeleteDesc.textContent = `Supprimer ${contact.firstName} ${contact.lastName} ?`;
         openModal(elements.modalDelete);
@@ -72,59 +87,74 @@ elements.contactList.addEventListener("click", (e) => {
 });
 // ── GESTION DE LA SÉLECTION ──────────────────────────────────────────────────
 // Checkbox individuelle
-elements.contactList.addEventListener("change", (e) => {
+elements.contactList.addEventListener("change", async (e) => {
     const chk = e.target.closest(".card-checkbox");
     if (!chk) return;
 
-    const id = Number(chk.dataset.id);
-    if (chk.checked) state.selectedIds.add(id);
-    else state.selectedIds.delete(id);
+    const id = chk.dataset.id
+    if (chk.checked) state.selectedIds.add(id)
+    else state.selectedIds.delete(id)
 
     chk.closest(".contact-card").classList.toggle("selected", chk.checked);
-    updateSelectionUI();
+
+    const contacts = await getContacts()
+    // Filtre la liste actuelle pour la passer à la mise à jour visuelle de sélection
+    const q = state.searchQuery.toLowerCase().trim();
+    const filtered = q ? contacts.filter(c => `${c.firstName} ${c.lastName}`.toLowerCase().includes(q)) : contacts;
+    updateSelectionUI(filtered, contacts);
 });
+
 // Tout sélectionner (page courante)
-elements.selectAllChk.addEventListener("change", () => {
+elements.selectAllChk.addEventListener("change", async () => {
     const cards = elements.contactList.querySelectorAll(".card-checkbox");
     cards.forEach(chk => {
-        const id = Number(chk.dataset.id);
+        const id = chk.dataset.id;
         if (elements.selectAllChk.checked) state.selectedIds.add(id);
         else state.selectedIds.delete(id);
     });
-    renderList();
+    renderList(await getContacts());
 });
+
 // ── MODALS ET CONFIRMATIONS ──────────────────────────────────────────────────
 // Confirmation suppression simple
-elements.modalDeleteConfirm.addEventListener("click", () => {
+elements.modalDeleteConfirm.addEventListener("click", async () => {
     if (pendingDeleteId) {
-        const contact = getContactById(pendingDeleteId);
+        const listContacts = await getContacts()
+        const contact = listContacts.find((c) => c.id === pendingDeleteId)
         const name = contact ? `${contact.firstName} ${contact.lastName}` : "";
         
-        deleteContact(pendingDeleteId);
+        // Supprime sur le serveur
+        await deleteContact(pendingDeleteId);
         state.selectedIds.delete(pendingDeleteId);
         
         closeModal(elements.modalDelete);
-        renderList();
+        await rafraichirInterface();
         showToast("danger", "Supprimé", `${name} a été retiré.`);
         pendingDeleteId = null;
     }
 });
-// Suppression multiple
+
+// bouton déclencheur Suppression multiple
 elements.deleteSelBtn.addEventListener("click", () => {
     const count = state.selectedIds.size;
     elements.modalDeleteMultiDesc.textContent = `Vous allez supprimer ${count} contacts.`;
     openModal(elements.modalDeleteMulti);
 });
 
-elements.modalDeleteMultiConfirm.addEventListener("click", () => {
+// Confirmation suppression multiple
+elements.modalDeleteMultiConfirm.addEventListener("click", async () => {
     const count = state.selectedIds.size;
-    deleteContacts(state.selectedIds);
+    // Convertit le Set en tableau d'IDs pour notre service de suppression groupée
+    const ids= Array.from(state.selectedIds);
+
+    await deleteContacts(ids);
     state.selectedIds.clear();
     closeModal(elements.modalDeleteMulti);
     state.currentPage = 1;
-    renderList();
+    await rafraichirInterface();
     showToast("danger", "Supprimé", `${count} contacts ont été supprimés.`);
 });
+
 // Fermetures (Annuler / Overlays)
 elements.modalDeleteCancel.addEventListener("click", () => {
     closeModal(elements.modalDelete);
@@ -173,234 +203,9 @@ elements.cancelBtn.addEventListener("click", resetForm);
         input.classList.remove("invalid");
     });
 });
-// ── INITIALISATION ───────────────────────────────────────────────────────────
-document.addEventListener("DOMContentLoaded", () => {
-    renderList();
+
+document.addEventListener("DOMContentLoaded",async () => {
+    await rafraichirInterface()
 });
 
 
-
-
-
-
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// MODAL
-// ══════════════════════════════════════════════════════════════════════════════
-// Fermer en cliquant sur l'overlay
-// [modalDelete, modalDeleteMulti].forEach((overlay) => {
-//     overlay.addEventListener("click", (e) => {
-//         if (e.target === overlay) closeModal(overlay);
-//     });
-// });
-
-// modalDeleteCancel.addEventListener("click",      () => { closeModal(modalDelete); pendingDeleteId = null; });
-// modalDeleteMultiCancel.addEventListener("click", () => closeModal(modalDeleteMulti));
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// VALIDATION
-// ══════════════════════════════════════════════════════════════════════════════
-// Effacer l'erreur au focus
-// ["firstName", "lastName", "email", "phone", "role"].forEach((f) => {
-//     document.getElementById(f).addEventListener("input", () => {
-//         document.getElementById(`err-${f}`).textContent = "";
-//         document.getElementById(f).classList.remove("invalid");
-//     });
-// });
-
-// Délégation — checkbox sur chaque carte
-// contactList.addEventListener("change", (e) => {
-//     const chk = e.target.closest(".card-checkbox");
-//     if (!chk) return;
-//     const id = Number(chk.dataset.id);
-//     if (chk.checked) selectedIds.add(id);
-//     else selectedIds.delete(id);
-
-//     const card = chk.closest(".contact-card");
-//     card.classList.toggle("selected", chk.checked);
-
-//     updateSelectionUI();
-// });
-
-// "Tout sélectionner" — uniquement la page courante
-// selectAllChk.addEventListener("change", () => {
-//     const visibleIds = getPageSlice(getFiltered()).map((c) => c.id);
-//     if (selectAllChk.checked) {
-//         visibleIds.forEach((id) => selectedIds.add(id));
-//     } else {
-//         visibleIds.forEach((id) => selectedIds.delete(id));
-//     }
-//     renderList();
-// });
-
-// Bouton supprimer la sélection
-// deleteSelBtn.addEventListener("click", () => {
-//     if (selectedIds.size < 3) return;
-//     const count = selectedIds.size;
-//     modalDeleteMultiDesc.textContent =
-//         `Vous allez supprimer ${count} contact${count > 1 ? "s" : ""}. Cette action est irréversible.`;
-//     openModal(modalDeleteMulti);
-// });
-
-// modalDeleteMultiConfirm.addEventListener("click", () => {
-//     const count = selectedIds.size;
-//     deleteContacts(new Set(selectedIds));
-//     selectedIds.clear();
-//     closeModal(modalDeleteMulti);
-//     currentPage = 1;
-//     renderList();
-//     showToast("danger", "Contacts supprimés", `${count} contacts ont été supprimés.`);
-// });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// DÉLÉGATION — boutons Modifier / Supprimer sur les cartes
-// ══════════════════════════════════════════════════════════════════════════════
-
-// contactList.addEventListener("click", (e) => {
-//     const editBtn   = e.target.closest(".btn-edit");
-//     const deleteBtn = e.target.closest(".btn-delete");
-
-//     // ── MODIFIER ──
-//     if (editBtn) {
-//         const id = Number(editBtn.dataset.id);
-//         const contact = getContactById(id);
-//         if (!contact) return;
-//         setEditMode(contact);
-//     }
-
-//     // ── SUPPRIMER (ouvre le modal) ──
-//     if (deleteBtn) {
-//         const id = Number(deleteBtn.dataset.id);
-//         const contact = getContactById(id);
-//         if (!contact) return;
-//         pendingDeleteId = id;
-//         modalDeleteDesc.textContent =
-//             `Supprimer ${contact.firstName} ${contact.lastName} ? Cette action est irréversible.`;
-//         openModal(modalDelete);
-//     }
-// });
-
-// Confirmation suppression simple
-// modalDeleteConfirm.addEventListener("click", () => {
-//     if (!pendingDeleteId) return;
-//     const contact = getContactById(pendingDeleteId);
-//     const name    = contact ? `${contact.firstName} ${contact.lastName}` : "le contact";
-//     deleteContact(pendingDeleteId);
-//     selectedIds.delete(pendingDeleteId);
-//     pendingDeleteId = null;
-//     closeModal(modalDelete);
-
-//     // Si on supprimait la carte en édition → reset formulaire
-//     if (Number(editIdInput.value) === pendingDeleteId) resetForm();
-
-//     renderList();
-//     showToast("danger", "Contact supprimé", `${name} a été supprimé avec succès.`);
-// });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FORMULAIRE — état ajout / édition
-// ══════════════════════════════════════════════════════════════════════════════
-
-// function setEditMode(contact) {
-//     editIdInput.value  = contact.id;
-//     firstNameEl.value  = contact.firstName;
-//     lastNameEl.value   = contact.lastName;
-//     emailEl.value      = contact.email;
-//     phoneEl.value      = contact.phone;
-//     roleEl.value       = contact.role;
-//     submitLabel.textContent = "Mettre à jour";
-//     cancelBtn.classList.add("visible");
-//     clearErrors();
-
-//     document.querySelectorAll(".contact-card").forEach((el) => {
-//         el.classList.toggle("editing", Number(el.dataset.id) === contact.id);
-//     });
-
-//     // Scroll vers le formulaire
-//     document.querySelector(".panel-form").scrollTo({ top: 0, behavior: "smooth" });
-//     firstNameEl.focus();
-// }
-
-// function resetForm() {
-//     form.reset();
-//     editIdInput.value = "";
-//     submitLabel.textContent = "Ajouter";
-//     cancelBtn.classList.remove("visible");
-//     clearErrors();
-//     document.querySelectorAll(".contact-card.editing").forEach((el) => {
-//         el.classList.remove("editing");
-//     });
-// }
-
-// cancelBtn.addEventListener("click", () => {
-//     resetForm();
-// });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// SOUMISSION — CREATE + UPDATE
-// ══════════════════════════════════════════════════════════════════════════════
-
-// form.addEventListener("submit", (e) => {
-//     e.preventDefault();
-
-//     const data = {
-//         firstName: firstNameEl.value,
-//         lastName:  lastNameEl.value,
-//         email:     emailEl.value,
-//         phone:     phoneEl.value,
-//         role:      roleEl.value,
-//     };
-
-//     const errors = validateForm(data);
-
-//     if (Object.keys(errors).length > 0) {
-//         showErrors(errors);
-//         return;
-//     }
-
-    // clearErrors();
-    // const id = editIdInput.value;
-
-    // if (id) {
-    //     // UPDATE
-    //     const updated = updateContact(Number(id), data);
-    //     resetForm();
-    //     renderList();
-    //     showToast(
-    //         "success",
-    //         "Contact mis à jour",
-    //         `${updated.firstName} ${updated.lastName} a été modifié avec succès.`
-    //     );
-    // } else {
-        // CREATE
-//         const created = createContact(data);
-//         resetForm();
-//         // Aller à la dernière page pour voir le nouveau contact
-//         const filtered   = getFiltered();
-//         currentPage = getTotalPages(filtered);
-//         renderList();
-//         showToast(
-//             "success",
-//             "Contact ajouté",
-//             `${created.firstName} ${created.lastName} a été ajouté avec succès.`
-//         );
-//     }
-// });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// RECHERCHE
-// ══════════════════════════════════════════════════════════════════════════════
-
-// searchInput.addEventListener("input", () => {
-//     searchQuery = searchInput.value;
-//     currentPage = 1;
-//     renderList();
-// });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// INIT
-// ══════════════════════════════════════════════════════════════════════════════
-
-// renderList();

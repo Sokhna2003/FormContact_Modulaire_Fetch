@@ -1,5 +1,4 @@
 import { elements } from "../DOM/elements.js";
-import { getContacts } from "../stores/contactStore.js";
 import { updateGlobalStats } from "./statsRenderer.js";
 
 // ── Constantes ─────────────────────────────────────────────────────────────────
@@ -15,12 +14,12 @@ export let state = {
 // FILTRAGE & PAGINATION
 // ══════════════════════════════════════════════════════════════════════════════
 
-function getFiltered() {
+function getFiltered(allContacts) {
     const q = state.searchQuery.toLowerCase().trim();
     return q
-        ? getContacts().filter((c) =>
+        ? allContacts.filter((c) =>
             `${c.firstName} ${c.lastName} ${c.email} ${c.role} ${c.phone}`.toLowerCase().includes(q))
-        : getContacts();
+        : allContacts;
 }
 
 function getTotalPages(filtered) {
@@ -45,6 +44,11 @@ export function createCard(contact) {
     const li = document.createElement("li");
     li.className = "contact-card" + (state.selectedIds.has(contact.id) ? " selected" : "");
     li.dataset.id = contact.id;
+
+    // Ajustement de l'affichage de la date selon le type (Date ou String)
+    // const dateAffichage = contact.createdAt instanceof Date 
+    //     ? contact.createdAt.toLocaleDateString() 
+    //     : contact.createdAt;
 
     li.innerHTML = `
         <input type="checkbox" class="card-checkbox" data-id="${contact.id}"
@@ -71,9 +75,12 @@ export function createCard(contact) {
 }
 
 // Gère l'affichage de la liste complète avec filtrage et pagination
-export function renderList() {
-    updateGlobalStats()
-    const filtered   = getFiltered();
+export function renderList(allContacts) {
+    // Si pas de tableau fourni (sécurité), on vide la liste
+    if (!allContacts) return
+
+    updateGlobalStats(allContacts)   // transmet les contacts aux statistiques
+    const filtered   = getFiltered(allContacts);
     const totalPages = getTotalPages(filtered);
 
     // Corriger la page si hors limite
@@ -83,9 +90,6 @@ export function renderList() {
 
     elements.contactList.innerHTML = "";
 
-    // const total = getContacts().length;
-    // elements.listCount.textContent = `${total} contact${total > 1 ? "s" : ""}`;
-
     if (filtered.length === 0) {
         elements.emptyState.classList.remove("hidden");
     } else {
@@ -93,11 +97,11 @@ export function renderList() {
         slice.forEach((c) => elements.contactList.appendChild(createCard(c)));
     }
 
-    renderPagination(filtered.length, totalPages);
-    updateSelectionUI();
+    renderPagination(filtered.length, totalPages, allContacts);
+    updateSelectionUI(filtered, allContacts);
 }
 
-export function renderPagination(total, totalPages) {
+export function renderPagination(total, totalPages, allContacts) {
     elements.paginationEl.innerHTML = "";
     if (total <= PER_PAGE) return;
 
@@ -106,7 +110,7 @@ export function renderPagination(total, totalPages) {
     prev.className = "page-btn";
     prev.textContent = "←";
     prev.disabled = state.currentPage === 1;
-    prev.addEventListener("click", () => { state.currentPage--; renderList(); });
+    prev.addEventListener("click", () => { state.currentPage--; renderList(allContacts); });
     elements.paginationEl.appendChild(prev);
 
     // Numéros de pages
@@ -114,7 +118,7 @@ export function renderPagination(total, totalPages) {
         const btn = document.createElement("button");
         btn.className = "page-btn" + (i === state.currentPage ? " active" : "");
         btn.textContent = i;
-        btn.addEventListener("click", () => { state.currentPage = i; renderList(); });
+        btn.addEventListener("click", () => { state.currentPage = i; renderList(allContacts); });
         elements.paginationEl.appendChild(btn);
     }
 
@@ -123,22 +127,22 @@ export function renderPagination(total, totalPages) {
     next.className = "page-btn";
     next.textContent = "→";
     next.disabled = state.currentPage === totalPages;
-    next.addEventListener("click", () => { state.currentPage++; renderList(); });
+    next.addEventListener("click", () => { state.currentPage++; renderList(allContacts); });
     elements.paginationEl.appendChild(next);
 }
-
-
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SÉLECTION MULTIPLE
 // ══════════════════════════════════════════════════════════════════════════════
-export function updateSelectionUI() {
+export function updateSelectionUI(filtered, allContacts) {
     const count = state.selectedIds.size;
     elements.selCountEl.textContent = count;
     elements.deleteSelBtn.disabled = count < 3;
 
+    if (!filtered || !allContacts) return
+
     // Mettre à jour la checkbox "tout sélectionner"
-    const visibleIds = getPageSlice(getFiltered()).map((c) => c.id);
+    const visibleIds = getPageSlice(getFiltered(allContacts)).map((c) => c.id);
     const allChecked = visibleIds.length > 0 && visibleIds.every((id) => state.selectedIds.has(id));
     elements.selectAllChk.checked = allChecked;
     elements.selectAllChk.indeterminate = !allChecked && visibleIds.some((id) => state.selectedIds.has(id));

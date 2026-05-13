@@ -1,4 +1,5 @@
 import { elements } from "../DOM/elements.js";
+
 // ── Constantes ─────────────────────────────────────────────────────────────────
 const PHONE_REGEX   = /^(70|71|75|76|77|78)\d{7}$/;
 const EMAIL_REGEX   = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
